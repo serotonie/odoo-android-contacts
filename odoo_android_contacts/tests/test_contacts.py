@@ -1,8 +1,10 @@
 import re
 import secrets
+import time
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+from odoo import Command
 from odoo.tests import HttpCase, tagged
 
 from ..controllers.contacts import challenge_for, digest
@@ -11,7 +13,7 @@ from ..controllers.contacts import challenge_for, digest
 @tagged("post_install", "-at_install")
 class TestAndroidContacts(HttpCase):
     def test_authorize_exchange_and_scope(self):
-        self.authenticate("admin", "admin")
+        self.authenticate("admin", "admin", session_extra={"identity-check-last": time.time()})
         verifier = secrets.token_urlsafe(32)
         state = secrets.token_urlsafe(32)
         challenge = challenge_for(verifier)
@@ -73,6 +75,27 @@ class TestAndroidContacts(HttpCase):
         })
         self.assertEqual(response.status_code, 400)
 
+    def test_consent_requires_recent_identity(self):
+        self.authenticate("admin", "admin")
+        params = {
+            "challenge": secrets.token_urlsafe(32),
+            "state": secrets.token_urlsafe(32),
+        }
+        page = self.url_open("/android-contacts/authorize?" + urlencode(params))
+        self.assertIn('name="password"', page.text)
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+        form = {**params, "csrf_token": csrf, "decision": "allow"}
+        missing = self.url_open("/android-contacts/authorize", data=form)
+        self.assertEqual(missing.status_code, 403)
+        invalid = self.url_open("/android-contacts/authorize", data={**form, "password": "incorrect"})
+        self.assertEqual(invalid.status_code, 403)
+        valid = self.url_open(
+            "/android-contacts/authorize",
+            data={**form, "password": "admin"},
+            allow_redirects=False,
+        )
+        self.assertEqual(valid.status_code, 303, valid.text)
+
     def test_expired_code_is_rejected(self):
         verifier = secrets.token_urlsafe(32)
         code = secrets.token_urlsafe(32)
@@ -80,9 +103,28 @@ class TestAndroidContacts(HttpCase):
             "code_hash": digest(code),
             "challenge": challenge_for(verifier),
             "user_id": self.env.ref("base.user_admin").id,
-            "expires_at": datetime.utcnow() - timedelta(seconds=1),
+            "expires_at": datetime.utcnow() - timedelta(hours=1),
         })
         response = self.url_open("/android-contacts/exchange", json={
             "code": code, "verifier": verifier,
         })
         self.assertEqual(response.status_code, 401)
+
+    def test_user_without_key_permission_cannot_authorize(self):
+        user = self.env["res.users"].sudo().create({
+            "name": "Portal test",
+            "login": "portal-test",
+            "group_ids": [Command.set([self.env.ref("base.group_portal").id])],
+        })
+        self.authenticate(user.login, "unused", session_extra={"identity-check-last": time.time()})
+        params = {
+            "challenge": secrets.token_urlsafe(32),
+            "state": secrets.token_urlsafe(32),
+        }
+        page = self.url_open("/android-contacts/authorize?" + urlencode(params))
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+        response = self.url_open("/android-contacts/authorize", data={
+            **params, "csrf_token": csrf, "decision": "allow",
+        })
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.env["odoo.android.authorization"].sudo().search_count([]), 0)

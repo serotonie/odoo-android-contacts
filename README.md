@@ -3,7 +3,9 @@
 Module Odoo accompagnant l'application Android Laudhair Odoo. Après connexion web
 et consentement, il délivre une clé limitée aux endpoints de lecture de contacts
 du module, valable 90 jours. Les droits et règles Odoo de l'utilisateur restent
-applicables. La clé peut être révoquée dans les préférences de sécurité Odoo.
+applicables. Odoo demande une confirmation du mot de passe si l'identité n'a
+pas été vérifiée dans les 10 dernières minutes. La clé peut être révoquée dans
+les préférences de sécurité Odoo.
 
 Installer `odoo_android_contacts` dans le chemin des addons et activer le module
 dans la base. La durée maximale de clé autorisée par les groupes de l'utilisateur

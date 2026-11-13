@@ -2,6 +2,7 @@ import base64
 import hashlib
 import re
 import secrets
+import time
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
@@ -9,7 +10,7 @@ from markupsafe import escape
 from werkzeug.exceptions import BadRequest, Unauthorized
 
 from odoo import fields, http
-from odoo.exceptions import ValidationError
+from odoo.exceptions import AccessDenied, UserError, ValidationError
 from odoo.http import request
 
 
@@ -28,7 +29,7 @@ def challenge_for(verifier):
 
 class AndroidContacts(http.Controller):
     @http.route("/android-contacts/authorize", type="http", auth="user", methods=["GET", "POST"])
-    def authorize(self, challenge=None, state=None, decision=None, **kwargs):
+    def authorize(self, challenge=None, state=None, decision=None, password=None, **kwargs):
         if not isinstance(challenge, str) or not CHALLENGE.fullmatch(challenge):
             raise BadRequest()
         if not isinstance(state, str) or not CHALLENGE.fullmatch(state):
@@ -36,6 +37,22 @@ class AndroidContacts(http.Controller):
         if request.httprequest.method == "POST":
             params = {"state": state}
             if decision == "allow":
+                request.env["res.users.apikeys.description"].check_access_make_key()
+                if request.session.get("identity-check-last", 0) <= time.time() - 600:
+                    if not password:
+                        return self._consent(challenge, state, "Confirmez votre identité pour continuer.", 403)
+                    try:
+                        with request.env["res.users"]._assert_can_auth(user=request.env.user.login):
+                            try:
+                                wizard = request.env["res.users.identitycheck"].sudo().create({
+                                    "auth_method": "password",
+                                })
+                                wizard.with_context(password=password)._check_identity()
+                            except UserError as error:
+                                raise AccessDenied() from error
+                    except AccessDenied:
+                        return self._consent(challenge, state, "Confirmation refusée ou trop de tentatives.", 403)
+                    request.session["identity-check-last"] = time.time()
                 code = secrets.token_urlsafe(32)
                 request.env["odoo.android.authorization"].sudo().create({
                     "code_hash": digest(code),
@@ -52,6 +69,13 @@ class AndroidContacts(http.Controller):
             response.headers.extend(NO_STORE)
             return response
 
+        return self._consent(challenge, state)
+
+    def _consent(self, challenge, state, message="", status=200):
+        password_input = ""
+        if request.session.get("identity-check-last", 0) <= time.time() - 600:
+            password_input = """<label>Confirmez votre mot de passe Odoo
+<input type="password" name="password" autocomplete="current-password" required></label>"""
         html = f"""<!doctype html><html lang="fr"><head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Autoriser les contacts Android</title></head><body>
@@ -63,10 +87,12 @@ vous n'utilisez pas l'application ? Les contacts seront copiés sur votre télé
 <input type="hidden" name="csrf_token" value="{escape(request.csrf_token())}">
 <input type="hidden" name="challenge" value="{escape(challenge)}">
 <input type="hidden" name="state" value="{escape(state)}">
+<p>{escape(message)}</p>
+{password_input}
 <button type="submit" name="decision" value="allow">Autoriser</button>
-<button type="submit" name="decision" value="deny">Annuler</button>
+<button type="submit" name="decision" value="deny" formnovalidate>Annuler</button>
 </form></body></html>"""
-        return request.make_response(html, headers=NO_STORE)
+        return request.make_response(html, headers=NO_STORE, status=status)
 
     @http.route("/android-contacts/exchange", type="http", auth="public", methods=["POST"], csrf=False, save_session=False)
     def exchange(self, **kwargs):
@@ -91,6 +117,7 @@ vous n'utilisez pas l'application ? Les contacts seront copiés sur votre télé
         user = request.env["res.users"].sudo().browse(row[0]).exists()
         if not user or not user.active:
             raise Unauthorized()
+        request.env["res.users.apikeys.description"].with_user(user).check_access_make_key()
         expiry = datetime.utcnow() + timedelta(days=90)
         try:
             key = request.env["res.users.apikeys"].with_user(user)._generate(
