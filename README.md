@@ -1,5 +1,8 @@
 # Android Contacts pour Odoo 19
 
+Le module est désormais maintenu dans le dépôt
+[odoo-addons](https://github.com/serotonie/odoo-addons), qui est privé.
+
 Module Odoo accompagnant l'application Android Laudhair Odoo. Après connexion web
 et consentement, il délivre une clé limitée aux endpoints de lecture de contacts
 du module, valable 90 jours. Les droits et règles Odoo de l'utilisateur restent
