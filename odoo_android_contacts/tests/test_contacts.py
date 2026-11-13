@@ -5,7 +5,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from odoo.tests import HttpCase, tagged
 
-from ..controllers.contacts import challenge_for
+from ..controllers.contacts import challenge_for, digest
 
 
 @tagged("post_install", "-at_install")
@@ -72,3 +72,17 @@ class TestAndroidContacts(HttpCase):
             "decision": "allow",
         })
         self.assertEqual(response.status_code, 400)
+
+    def test_expired_code_is_rejected(self):
+        verifier = secrets.token_urlsafe(32)
+        code = secrets.token_urlsafe(32)
+        self.env["odoo.android.authorization"].sudo().create({
+            "code_hash": digest(code),
+            "challenge": challenge_for(verifier),
+            "user_id": self.env.ref("base.user_admin").id,
+            "expires_at": datetime.utcnow() - timedelta(seconds=1),
+        })
+        response = self.url_open("/android-contacts/exchange", json={
+            "code": code, "verifier": verifier,
+        })
+        self.assertEqual(response.status_code, 401)
